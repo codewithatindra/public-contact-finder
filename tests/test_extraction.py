@@ -41,3 +41,49 @@ class ExtractionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class BulkTests(unittest.TestCase):
+    def test_csv_dedup_and_provenance(self):
+        import contextlib
+        import io
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'profile.html').write_text('<p>HELLO@example.com</p>', encoding='utf-8')
+            (root / 'profiles.csv').write_text('profile_url,text,html_file\nhttps://x.com/a,hello@example.com,\nhttps://www.linkedin.com/in/b/,,profile.html\n', encoding='utf-8')
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(['--csv', str(root / 'profiles.csv'), '--json']), 0)
+            data = json.loads(out.getvalue())
+            self.assertEqual(data['profiles_processed'], 2)
+            self.assertEqual(len(data['contacts']), 1)
+            self.assertEqual(len(data['contacts'][0]['sources']), 2)
+
+    def test_list_and_bad_row(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'profiles.tsv'
+            path.write_text('https://x.com/a\tcontact@example.org\n', encoding='utf-8')
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(main(['--list-file', str(path)]), 0)
+            self.assertIn('contact@example.org', out.getvalue())
+            path.write_text('https://x.com/a\tcontact@example.org\ninvalid line\n', encoding='utf-8')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(['--list-file', str(path)]), 2)
+            self.assertIn('line 2', err.getvalue())
+
+    def test_oversize_html_and_empty_row(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'large.html').write_text('a' * 1000001)
+            (root / 'profiles.csv').write_text('profile_url,text,html_file\nhttps://x.com/a,,large.html\n')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(main(['--csv', str(root / 'profiles.csv')]), 2)
+            self.assertIn('row/line 2', err.getvalue())
+            self.assertIn('1 MB', err.getvalue())
